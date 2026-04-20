@@ -245,20 +245,19 @@ and every disposal.
 
 ### Sequence example
 
-```
-GreenAgent          YellowAgent
-     │                   │
-     │ carry 2 green → TRANSFORM
-     │ carry 1 yellow → MOVE east
-     │ at z1 frontier → DROP yellow
-     │
-     ├── broadcast ─{waste_at, (3,4), yellow}─►│
-     │                                         │ known_wastes[(3,4)] = yellow
-     │                                         │ deliberate → MOVE toward (3,4)
-     │                                         │ PICKUP yellow
-     │                                         │
-     │◄── broadcast ─{waste_gone, (3,4)}───────┤
-     │ known_wastes.pop((3,4))                 │
+```mermaid
+sequenceDiagram
+    participant G as GreenAgent
+    participant B as Message board
+    participant Y as YellowAgent
+    Note over G: carries 2 green -> TRANSFORM<br/>carries 1 yellow -> MOVE east
+    G->>B: waste_at (3,4) yellow
+    B->>Y: deliver (3,4) yellow
+    Note over Y: known_wastes[(3,4)] = yellow<br/>deliberate -> MOVE toward (3,4)
+    Y->>B: waste_gone (3,4)
+    B->>G: deliver (3,4) gone
+    Note over Y: PICKUP yellow
+    Note over G: known_wastes.pop((3,4))
 ```
 
 ## 8. Metrics
@@ -399,6 +398,7 @@ within reach of new reds.
 |             5 |            4.63 |             0.80 |
 |             7 |            4.57 |             0.83 |
 |            10 |            4.27 |             1.77 |
+
 Theoretical maximum (20 greens → 5 disposed) is reached best at **3 robots
 per type**: disposed is highest and remaining is lowest. Beyond ~5 robots
 per type the system starts **under-performing**: too many agents compete for
