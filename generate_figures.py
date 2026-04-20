@@ -42,60 +42,100 @@ BONUS_STEPS = 300
 # 1. Custom pipeline diagram
 # =============================================================================
 def fig_pipeline():
-    fig, ax = plt.subplots(figsize=(11, 3.6))
+    """Zoned flow diagram: three dashed zone outlines, each containing the
+    wastes and robot that live there; arrows show waste transitions between
+    zones; disposal cell sits inside z3."""
+    fig, ax = plt.subplots(figsize=(15, 5.2))
 
-    zone_colors = ["#e8f5e9", "#fff8e1", "#ffebee"]
-    zone_titles = ["Zone z1\nlow radioactivity", "Zone z2\nmedium radioactivity",
-                   "Zone z3\nhigh radioactivity"]
-    for i, (c, t) in enumerate(zip(zone_colors, zone_titles)):
+    # Zone colors and borders
+    Z = [
+        dict(x=0.3,  w=5.0, name="Zone z1 - low radioactivity",
+             fill="#e8f5e9", border="#2e7d32"),
+        dict(x=6.3,  w=5.0, name="Zone z2 - medium radioactivity",
+             fill="#fff8e1", border="#b57a00"),
+        dict(x=12.3, w=7.0, name="Zone z3 - high radioactivity",
+             fill="#ffebee", border="#c62828"),
+    ]
+    for z in Z:
         ax.add_patch(patches.FancyBboxPatch(
-            (i * 4, 0.5), 3.6, 3,
-            boxstyle="round,pad=0.05", linewidth=1.2,
-            edgecolor="#666", facecolor=c))
-        ax.text(i * 4 + 1.8, 3.2, t, ha="center", va="top",
-                fontsize=11, fontweight="bold")
+            (z["x"], 0.4), z["w"], 4.0,
+            boxstyle="round,pad=0.1",
+            linewidth=2.0, linestyle=(0, (6, 4)),   # dashed border
+            edgecolor=z["border"], facecolor=z["fill"], zorder=1))
+        ax.text(z["x"] + z["w"] / 2, 4.55, z["name"],
+                ha="center", va="bottom",
+                fontsize=11.5, fontweight="bold", color=z["border"])
 
-    # Robots inside their allowed zones
-    ax.text(1.8, 2.3, "GreenAgent", ha="center", color="#1b5e20", fontsize=10,
-            fontweight="bold")
-    ax.text(1.8, 1.9, "collects 2 green\ntransforms -> yellow",
-            ha="center", va="center", fontsize=8.5)
+    def waste(cx, cy, color, label="waste"):
+        ax.add_patch(patches.FancyBboxPatch(
+            (cx - 0.5, cy - 0.4), 1.0, 0.8,
+            boxstyle="round,pad=0.05",
+            linewidth=1.2, edgecolor="#555",
+            facecolor=color, zorder=3))
+        ax.text(cx, cy, label, ha="center", va="center",
+                fontsize=8.5, color="#222")
 
-    ax.text(5.8, 2.3, "YellowAgent", ha="center", color="#b57a00", fontsize=10,
-            fontweight="bold")
-    ax.text(5.8, 1.9, "collects 2 yellow\ntransforms -> red",
-            ha="center", va="center", fontsize=8.5)
+    def robot(cx, cy, color, title, subtitle):
+        ax.add_patch(patches.FancyBboxPatch(
+            (cx - 0.9, cy - 0.6), 1.8, 1.2,
+            boxstyle="round,pad=0.05",
+            linewidth=1.6, edgecolor="#333",
+            facecolor=color, zorder=3))
+        ax.text(cx, cy + 0.2, title, ha="center", va="center",
+                fontsize=10, color="white", fontweight="bold")
+        ax.text(cx, cy - 0.22, subtitle, ha="center", va="center",
+                fontsize=7.8, color="white")
 
-    ax.text(9.8, 2.3, "RedAgent", ha="center", color="#b71c1c", fontsize=10,
-            fontweight="bold")
-    ax.text(9.8, 1.9, "collects 1 red\nputs it in disposal",
-            ha="center", va="center", fontsize=8.5)
+    def arrow(x0, y0, x1, y1, label=None, ls="solid", color="#333",
+              label_y_offset=0.25):
+        ax.annotate("", xy=(x1, y1), xytext=(x0, y0),
+                    arrowprops=dict(arrowstyle="->", linewidth=1.6,
+                                    color=color, linestyle=ls), zorder=2)
+        if label:
+            ax.text((x0 + x1) / 2, (y0 + y1) / 2 + label_y_offset, label,
+                    ha="center", va="center", fontsize=8.3,
+                    style="italic", color=color)
 
-    # Drop-arrows between zones
-    arrow_style = dict(arrowstyle="->", linewidth=1.8, color="#333",
-                       connectionstyle="arc3,rad=0.0")
-    ax.annotate("", xy=(4, 1.3), xytext=(3.6, 1.3), arrowprops=arrow_style)
-    ax.text(3.8, 1.05, "drops yellow", ha="center", fontsize=8, style="italic")
-    ax.annotate("", xy=(8, 1.3), xytext=(7.6, 1.3), arrowprops=arrow_style)
-    ax.text(7.8, 1.05, "drops red", ha="center", fontsize=8, style="italic")
+    # ---- z1: two greens feed the Green robot -------------------------------
+    waste(1.4, 3.5, "#a5d6a7", "green")
+    waste(1.4, 1.8, "#a5d6a7", "green")
+    robot(3.9, 2.6, "#2e7d32", "GreenAgent", "2G -> 1Y  |  zone z1")
+    arrow(2.0, 3.5, 3.0, 2.8)
+    arrow(2.0, 1.8, 3.0, 2.4)
 
-    # Disposal marker
+    # ---- z1 -> z2: produced yellow --------------------------------------
+    arrow(4.8, 2.6, 7.4, 2.6, label="drops yellow", color="#b57a00")
+
+    # ---- z2: two yellows feed the Yellow robot -----------------------------
+    waste(7.4, 3.5, "#fff59d", "yellow")
+    waste(7.4, 1.8, "#fff59d", "yellow")
+    robot(9.9, 2.6, "#b57a00", "YellowAgent", "2Y -> 1R  |  zones z1-z2")
+    arrow(8.0, 3.5, 9.0, 2.8)
+    arrow(8.0, 1.8, 9.0, 2.4)
+
+    # ---- z2 -> z3: produced red -----------------------------------------
+    arrow(10.8, 2.6, 13.4, 2.6, label="drops red", color="#c62828")
+
+    # ---- z3: one red feeds the Red robot, which delivers to disposal -------
+    waste(13.4, 2.6, "#ef9a9a", "red")
+    robot(15.8, 2.6, "#c62828", "RedAgent", "delivers  |  any zone")
+    arrow(14.0, 2.6, 14.9, 2.6)
+    # disposal cell
     ax.add_patch(patches.FancyBboxPatch(
-        (12.0, 0.5), 1.6, 3,
-        boxstyle="round,pad=0.05", linewidth=1.2,
-        edgecolor="#444", facecolor="#212121"))
-    ax.text(12.8, 2.0, "DISPOSAL\nCELL", ha="center", va="center",
-            color="white", fontweight="bold", fontsize=10)
-    ax.annotate("", xy=(12, 1.3), xytext=(11.6, 1.3), arrowprops=arrow_style)
-    ax.text(11.8, 1.05, "delivers", ha="center", fontsize=8, style="italic")
+        (17.8, 2.0), 1.4, 1.2,
+        boxstyle="round,pad=0.05",
+        linewidth=1.8, edgecolor="#222", facecolor="#212121", zorder=3))
+    ax.text(18.5, 2.6, "DISPOSAL\nCELL", ha="center", va="center",
+            color="white", fontsize=9.5, fontweight="bold")
+    arrow(16.7, 2.6, 17.8, 2.6, label="delivers")
 
-    # Mass-conservation caption underneath
-    ax.text(6.8, -0.1,
+    # Mass conservation caption
+    ax.text(9.5, -0.25,
             r"mass conservation: $N$ green $\to$ $N/2$ yellow $\to$ $N/4$ red $\to$ $N/4$ disposed",
-            ha="center", va="top", fontsize=9, style="italic", color="#555")
+            ha="center", va="top", fontsize=9.5, style="italic", color="#555")
 
-    ax.set_xlim(-0.3, 14)
-    ax.set_ylim(-0.8, 4.2)
+    ax.set_xlim(0, 20)
+    ax.set_ylim(-0.8, 5.2)
     ax.axis("off")
     plt.tight_layout()
     path = f"{OUT}/pipeline.png"
