@@ -42,7 +42,7 @@ class RobotMission(mesa.Model):
 
     def __init__(self, width=12, height=8,
                  n_green=3, n_yellow=2, n_red=2,
-                 n_wastes=8,
+                 n_wastes=8, n_yellow_wastes=0, n_red_wastes=0,
                  communication=True, comm_range=0,
                  seed=None):
         super().__init__(seed=seed)
@@ -61,23 +61,53 @@ class RobotMission(mesa.Model):
         self.zone_width = width // 3
         self.n_wastes_initial = n_wastes
 
+        # --- Counters (exposed via DataCollector) --------------------------
+        self.n_disposed = 0
+        self.green_to_yellow_transforms = 0
+        self.yellow_to_red_transforms = 0
+        # Collection-time tracking: for each robot & collect-color, remember
+        # the step when it picked up its first unit. On second pickup, the
+        # interval is appended to _collection_intervals[color] and the entry
+        # is cleared. A drop of a collect-color waste also clears.
+        self._first_pick_step = {}                  # {(robot_id, color): step}
+        self._collection_intervals = {GREEN: [], YELLOW: [], RED: []}
+
         # --- build environment ---
         self._place_radioactivity()
         self.disposal_pos = self._place_disposal()
-        self._spawn_wastes(n_wastes)
+        self._spawn_wastes(n_green=n_wastes, n_yellow=n_yellow_wastes,
+                           n_red=n_red_wastes)
         self._spawn_robots(n_green, n_yellow, n_red)
 
         # --- data collection ---
         self.datacollector = DataCollector(
             model_reporters={
-                "green_wastes": lambda m: m._count_waste(GREEN),
-                "yellow_wastes": lambda m: m._count_waste(YELLOW),
-                "red_wastes": lambda m: m._count_waste(RED),
-                "disposed": lambda m: m.n_disposed,
+                # Global counts (legacy - used by existing plots)
+                "green_wastes":    lambda m: m._count_waste(GREEN),
+                "yellow_wastes":   lambda m: m._count_waste(YELLOW),
+                "red_wastes":      lambda m: m._count_waste(RED),
+                # On-grid vs carried split
+                "green_on_grid":   lambda m: m._count_waste_on_grid(GREEN),
+                "yellow_on_grid":  lambda m: m._count_waste_on_grid(YELLOW),
+                "red_on_grid":     lambda m: m._count_waste_on_grid(RED),
+                "green_carried":   lambda m: m._count_waste_carried(GREEN),
+                "yellow_carried":  lambda m: m._count_waste_carried(YELLOW),
+                "red_carried":     lambda m: m._count_waste_carried(RED),
+                # Pipeline throughput
+                "disposed":        lambda m: m.n_disposed,
+                "g_to_y_transforms": lambda m: m.green_to_yellow_transforms,
+                "y_to_r_transforms": lambda m: m.yellow_to_red_transforms,
+                # Communication
                 "messages_active": lambda m: len(m.message_board),
+                # Exploration coverage per zone (union of every robot's visited set)
+                "visited_z1":      lambda m: m._visited_ratio_for_zone(1),
+                "visited_z2":      lambda m: m._visited_ratio_for_zone(2),
+                "visited_z3":      lambda m: m._visited_ratio_for_zone(3),
+                # Pairing efficiency - average steps between 1st and 2nd pickup
+                "avg_green_collect_time":  lambda m: m._avg_interval(GREEN),
+                "avg_yellow_collect_time": lambda m: m._avg_interval(YELLOW),
             }
         )
-        self.n_disposed = 0
         self.running = True
         self.datacollector.collect(self)
 
@@ -115,13 +145,26 @@ class RobotMission(mesa.Model):
         self.grid.place_agent(disposal, pos)
         return pos
 
-    def _spawn_wastes(self, n):
-        """Place `n` green wastes on random cells of z1."""
-        for _ in range(n):
+    def _spawn_wastes(self, n_green=0, n_yellow=0, n_red=0):
+        """Place wastes in their native zones:
+        green in z1, yellow in z2, red in z3 (but NOT on the disposal cell).
+        """
+        for _ in range(n_green):
             x = random.randrange(0, self.zone_width)
             y = random.randrange(self.height)
-            w = Waste(self, color=GREEN)
-            self.grid.place_agent(w, (x, y))
+            self.grid.place_agent(Waste(self, color=GREEN), (x, y))
+        for _ in range(n_yellow):
+            x = random.randrange(self.zone_width, 2 * self.zone_width)
+            y = random.randrange(self.height)
+            self.grid.place_agent(Waste(self, color=YELLOW), (x, y))
+        for _ in range(n_red):
+            # Keep red wastes off the disposal cell at init
+            while True:
+                x = random.randrange(2 * self.zone_width, self.width)
+                y = random.randrange(self.height)
+                if (x, y) != self.disposal_pos:
+                    break
+            self.grid.place_agent(Waste(self, color=RED), (x, y))
 
     def _spawn_robots(self, n_green, n_yellow, n_red):
         for _ in range(n_green):
@@ -217,9 +260,23 @@ class RobotMission(mesa.Model):
                 # Capacity rule per agent type
                 if not self._can_pickup(agent, color):
                     return False
+                # Inventory count of this color BEFORE pickup
+                prev_same_color = sum(1 for w in agent.inventory
+                                      if w.color == color)
                 self.grid.remove_agent(obj)
                 obj.carried_by = agent
                 agent.inventory.append(obj)
+                # --- collection-time tracking (collect_color only) ---------
+                if color == agent.COLLECT_COLOR and agent.PRODUCE_COLOR is not None:
+                    key = (agent.unique_id, color)
+                    if prev_same_color == 0:
+                        # first unit of collect_color picked
+                        self._first_pick_step[key] = self.steps
+                    elif prev_same_color == 1 and key in self._first_pick_step:
+                        # second unit -> interval completed
+                        interval = self.steps - self._first_pick_step[key]
+                        self._collection_intervals[color].append(interval)
+                        del self._first_pick_step[key]
                 # Step-2 broadcast: tell peers the waste is gone so they can
                 # forget it and avoid wasted trips to phantom locations.
                 self._broadcast({"type": "waste_gone", "pos": agent.pos,
@@ -257,6 +314,14 @@ class RobotMission(mesa.Model):
         produced = Waste(self, color=agent.PRODUCE_COLOR)
         produced.carried_by = agent
         agent.inventory.append(produced)
+        # --- transformation counters ---------------------------------------
+        if agent.COLLECT_COLOR == GREEN:
+            self.green_to_yellow_transforms += 1
+        elif agent.COLLECT_COLOR == YELLOW:
+            self.yellow_to_red_transforms += 1
+        # Transforming consumes the paired wastes -> clear any pending
+        # first-pick timing for this robot on the collect color.
+        self._first_pick_step.pop((agent.unique_id, agent.COLLECT_COLOR), None)
         return True
 
     def _try_drop(self, agent, color):
@@ -281,6 +346,11 @@ class RobotMission(mesa.Model):
                 agent.inventory.remove(w)
                 w.carried_by = None
                 self.grid.place_agent(w, agent.pos)
+                # Dropping our collect-color invalidates any pending
+                # first-pick timing (deadlock-break path).
+                if color == agent.COLLECT_COLOR:
+                    self._first_pick_step.pop(
+                        (agent.unique_id, agent.COLLECT_COLOR), None)
                 # Step-2 broadcast
                 self._broadcast({"type": "waste_at", "pos": agent.pos,
                                  "color": color, "sender_id": agent.unique_id})
@@ -352,10 +422,38 @@ class RobotMission(mesa.Model):
     # --------------------------------------------------------------- utilities
     def _count_waste(self, color):
         """Count waste of `color` on the grid + carried by robots."""
-        n = 0
-        for agent in list(self.agents):
-            if isinstance(agent, Waste) and agent.carried_by is None and agent.color == color:
-                n += 1
-            elif isinstance(agent, RobotAgent):
-                n += sum(1 for w in agent.inventory if w.color == color)
-        return n
+        return self._count_waste_on_grid(color) + self._count_waste_carried(color)
+
+    def _count_waste_on_grid(self, color):
+        """Wastes of `color` currently sitting on the grid (not carried)."""
+        return sum(1 for a in self.agents
+                   if isinstance(a, Waste)
+                   and a.carried_by is None and a.color == color)
+
+    def _count_waste_carried(self, color):
+        """Wastes of `color` currently in some robot's inventory."""
+        return sum(1 for a in self.agents if isinstance(a, RobotAgent)
+                   for w in a.inventory if w.color == color)
+
+    def _visited_ratio_for_zone(self, zone):
+        """Fraction of cells in `zone` that have been visited by at least
+        one robot. Unions every robot's `knowledge["visited"]` set."""
+        all_visited = set()
+        for a in self.agents:
+            if isinstance(a, RobotAgent):
+                all_visited.update(a.knowledge.get("visited", ()))
+        total, hit = 0, 0
+        for x in range(self.width):
+            if self._zone_for_x(x) != zone:
+                continue
+            for y in range(self.height):
+                total += 1
+                if (x, y) in all_visited:
+                    hit += 1
+        return hit / total if total else 0.0
+
+    def _avg_interval(self, color):
+        """Mean steps between 1st and 2nd pickup of `color` for all
+        transformations completed so far. Returns 0 if none yet."""
+        lst = self._collection_intervals.get(color, [])
+        return sum(lst) / len(lst) if lst else 0.0
